@@ -20,7 +20,7 @@ PACKAGE_ROOT="$(dirname "$(dirname "$SCRIPT_DIR")")"
 DOCKER_COMPOSE_FILE="$PACKAGE_ROOT/docker-compose.test.yml"
 MAX_WAIT_TIME=240  # 4 minutes
 CHECK_INTERVAL=5   # Check every 5 seconds
-RC1_CONTAINER="rc1"
+RC1_CONTAINER="rc1"  # Will be updated based on observability flag
 
 # Build configuration
 # Use a temporary directory outside the repo to avoid symlink traversal issues during Meteor build
@@ -35,6 +35,7 @@ PREBUILT_IMAGE=""
 INTERRUPTED=false
 PROFILE_PREFIX="local"  # Default to local build
 NO_TEST=false
+OBSERVABILITY_ENABLED=false
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -48,6 +49,12 @@ while [[ $# -gt 0 ]]; do
             ;;
         --no-test)
             NO_TEST=true
+            shift
+            ;;
+        --observability)
+            OBSERVABILITY_ENABLED=true
+            KEEP_RUNNING=true  # Automatically keep running when observability is enabled
+            INCLUDE_ELEMENT=true  # Automatically include Element when observability is enabled
             shift
             ;;
         --image)
@@ -67,6 +74,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --keep-running    Keep Docker containers running after tests complete"
             echo "  --element         Include Element web client in the test environment"
             echo "  --no-test         Start containers and skip running tests"
+            echo "  --observability   Enable observability services (Grafana, Prometheus, Tempo) and keep them running. Automatically includes Element web client."
             echo "  --image [IMAGE]   Use a pre-built Docker image instead of building locally"
             echo "  --help, -h        Show this help message"
             echo ""
@@ -139,10 +147,19 @@ cleanup() {
         log_info "  - Rocket.Chat: https://rc1"
         log_info "  - Synapse: https://hs1"
         log_info "  - MongoDB: localhost:27017"
-        if [ "$INCLUDE_ELEMENT" = true ]; then
+        if [ "$INCLUDE_ELEMENT" = true ] || [ "$OBSERVABILITY_ENABLED" = true ]; then
             log_info "  - Element: https://element"
         fi
-        if [ "$INCLUDE_ELEMENT" = true ]; then
+        if [ "$OBSERVABILITY_ENABLED" = true ]; then
+            log_info "  - Grafana: http://localhost:4001"
+            log_info "  - Prometheus: http://localhost:9090"
+            log_info "  - Tempo: http://localhost:3200"
+        fi
+        # Determine profile for cleanup message
+        if [ "$OBSERVABILITY_ENABLED" = true ]; then
+            CLEANUP_PROFILE="test-$PROFILE_PREFIX-observability"
+            log_info "To stop containers manually, run: docker compose -f $DOCKER_COMPOSE_FILE --profile $CLEANUP_PROFILE down -v"
+        elif [ "$INCLUDE_ELEMENT" = true ]; then
             log_info "To stop containers manually, run: docker compose -f $DOCKER_COMPOSE_FILE --profile element-$PROFILE_PREFIX down -v"
         else
             log_info "To stop containers manually, run: docker compose -f $DOCKER_COMPOSE_FILE --profile test-$PROFILE_PREFIX down -v"
@@ -150,7 +167,11 @@ cleanup() {
     else
         log_info "Cleaning up services..."
         if [ -f "$DOCKER_COMPOSE_FILE" ]; then
-            if [ "$INCLUDE_ELEMENT" = true ]; then
+            # Determine profile for cleanup
+            if [ "$OBSERVABILITY_ENABLED" = true ]; then
+                CLEANUP_PROFILE="test-$PROFILE_PREFIX-observability"
+                docker compose -f "$DOCKER_COMPOSE_FILE" --profile "$CLEANUP_PROFILE" down -v 2>/dev/null || true
+            elif [ "$INCLUDE_ELEMENT" = true ]; then
                 docker compose -f "$DOCKER_COMPOSE_FILE" --profile "element-$PROFILE_PREFIX" down -v 2>/dev/null || true
             else
                 docker compose -f "$DOCKER_COMPOSE_FILE" --profile "test-$PROFILE_PREFIX" down -v 2>/dev/null || true
@@ -222,13 +243,30 @@ else
     log_info "Building from local context: $BUILD_DIR"
 fi
 
+# Determine which profiles and container name to use based on observability flag
+if [ "$OBSERVABILITY_ENABLED" = true ]; then
+    # Use observability services (always includes element)
+    PROFILE="test-$PROFILE_PREFIX-observability"
+    RC1_CONTAINER="rc1"
+    log_info "Using observability-enabled Rocket.Chat service (includes Element)..."
+else
+    # Use regular services
+    if [ "$INCLUDE_ELEMENT" = true ]; then
+        PROFILE="element-$PROFILE_PREFIX"
+    else
+        PROFILE="test-$PROFILE_PREFIX"
+    fi
+    RC1_CONTAINER="rc1"
+fi
+
 # Start services
-if [ "$INCLUDE_ELEMENT" = true ]; then
-    PROFILE="element-$PROFILE_PREFIX"
+if [ "$OBSERVABILITY_ENABLED" = true ]; then
+    log_info "Starting federation services with observability (includes Element, Grafana, Prometheus, Tempo)..."
+    docker compose -f "$DOCKER_COMPOSE_FILE" --profile "$PROFILE" up -d --build
+elif [ "$INCLUDE_ELEMENT" = true ]; then
     log_info "Starting all federation services including Element web client..."
     docker compose -f "$DOCKER_COMPOSE_FILE" --profile "$PROFILE" up -d --build
 else
-    PROFILE="test-$PROFILE_PREFIX"
     log_info "Starting federation services (test profile only)..."
     docker compose -f "$DOCKER_COMPOSE_FILE" --profile "$PROFILE" up -d --build
 fi
@@ -337,8 +375,13 @@ else
     log_info "  - Access Rocket.Chat at: https://rc1"
     log_info "  - Access Synapse at: https://hs1"
     log_info "  - Access MongoDB at: localhost:27017"
-    if [ "$INCLUDE_ELEMENT" = true ]; then
+    if [ "$INCLUDE_ELEMENT" = true ] || [ "$OBSERVABILITY_ENABLED" = true ]; then
         log_info "  - Access Element at: https://element"
+    fi
+    if [ "$OBSERVABILITY_ENABLED" = true ]; then
+        log_info "  - Access Grafana at: http://localhost:4001"
+        log_info "  - Access Prometheus at: http://localhost:9090"
+        log_info "  - Access Tempo at: http://localhost:3200"
     fi
     log_info ""
     log_info "To run tests manually, execute: yarn testend-to-end"
