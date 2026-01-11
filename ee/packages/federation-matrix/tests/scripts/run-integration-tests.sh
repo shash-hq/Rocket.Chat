@@ -185,6 +185,11 @@ cleanup() {
         rm -rf "$BUILD_DIR" || true
     fi
 
+    # Restore .yarnrc.yml from backup if it exists (in case of early exit)
+    if [ -n "${ROCKETCHAT_ROOT:-}" ] && [ -f "$ROCKETCHAT_ROOT/.yarnrc.yml.bak" ]; then
+        mv "$ROCKETCHAT_ROOT/.yarnrc.yml.bak" "$ROCKETCHAT_ROOT/.yarnrc.yml" || true
+    fi
+
     # Exit with the test result code
     if [ -n "${TEST_EXIT_CODE:-}" ]; then
         exit $TEST_EXIT_CODE
@@ -212,10 +217,28 @@ if [ "$USE_PREBUILT_IMAGE" = false ]; then
     log_info "Cleaning up previous build..."
     rm -rf "$BUILD_DIR"
 
+    # Configure yarn to download Linux Alpine binaries for Docker compatibility
+    # This ensures packages like sharp have the correct binaries for the target container
+    log_info "Configuring yarn for multi-platform support..."
+    cd "$ROCKETCHAT_ROOT"
+    
+    # Backup the original .yarnrc.yml in case user has local changes
+    YARNRC_BACKUP="$ROCKETCHAT_ROOT/.yarnrc.yml.bak"
+    cp "$ROCKETCHAT_ROOT/.yarnrc.yml" "$YARNRC_BACKUP"
+    
+    yarn config set supportedArchitectures --json '{"os": ["current", "linux"], "cpu": ["current", "x64", "arm64"], "libc": ["current", "glibc", "musl"]}'
+
+    # Re-run yarn install to fetch the additional platform-specific binaries
+    log_info "Installing dependencies with multi-platform binaries..."
+    yarn install
+
     # Build the project
     log_info "Building packages from project root..."
-    cd "$ROCKETCHAT_ROOT"
     yarn build
+
+    # Restore the original .yarnrc.yml from backup
+    log_info "Restoring original yarn config..."
+    mv "$YARNRC_BACKUP" "$ROCKETCHAT_ROOT/.yarnrc.yml"
 
     # Build the Meteor bundle (must be run from the meteor directory)
     log_info "Building Meteor bundle..."
