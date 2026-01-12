@@ -12,10 +12,12 @@ import { eventIdSchema, roomIdSchema, userIdSchema, federationSDK, FederationReq
 import type { EventID, UserID, FileMessageType, PresenceState } from '@rocket.chat/federation-sdk';
 import { Logger } from '@rocket.chat/logger';
 import { Users, Subscriptions, Messages, Rooms, Settings } from '@rocket.chat/models';
+import { traceInstanceMethods, addSpanAttributes } from '@rocket.chat/tracing';
 import emojione from 'emojione';
 
 import { toExternalMessageFormat, toExternalQuoteMessageFormat } from './helpers/message.parsers';
 import { MatrixMediaService } from './services/MatrixMediaService';
+import { federationAttributeExtractors } from './tracing';
 
 export const fileTypes: Record<string, FileMessageType> = {
 	image: 'm.image',
@@ -144,6 +146,15 @@ export class FederationMatrix extends ServiceClass implements IFederationMatrixS
 
 	private readonly logger = new Logger(this.name);
 
+	constructor() {
+		super();
+
+		return traceInstanceMethods(this, {
+			type: 'service',
+			attributeExtractors: federationAttributeExtractors,
+		});
+	}
+
 	override async created(): Promise<void> {
 		// although this is async function, it is not awaited, so we need to register the listeners before everything else
 		this.onEvent('watch.settings', async ({ clientAction, setting }): Promise<void> => {
@@ -218,6 +229,14 @@ export class FederationMatrix extends ServiceClass implements IFederationMatrixS
 			// canonical alias computed from name
 			const matrixRoomResult = await federationSDK.createRoom(matrixUserId, roomName, room.t === 'c' ? 'public' : 'invite');
 
+			// Add runtime attributes after Matrix room is created
+			addSpanAttributes({
+				matrixRoomId: matrixRoomResult.room_id,
+				matrixEventId: matrixRoomResult.event_id,
+				matrixUserId,
+				visibility: room.t === 'c' ? 'public' : 'invite',
+			});
+
 			this.logger.debug('Matrix room created:', matrixRoomResult);
 
 			await Rooms.setAsFederated(room._id, { mrid: matrixRoomResult.room_id, origin: this.serverName });
@@ -266,6 +285,14 @@ export class FederationMatrix extends ServiceClass implements IFederationMatrixS
 			}
 
 			const actualMatrixUserId = `@${creator.username}:${this.serverName}`;
+			const isGroupDM = members.length > 2;
+
+			// Add runtime attributes
+			addSpanAttributes({
+				creatorUsername: creator.username,
+				matrixUserId: actualMatrixUserId,
+				isGroupDM,
+			});
 
 			let matrixRoomResult: { room_id: string; event_id?: string };
 			if (members.length === 2) {
@@ -276,6 +303,11 @@ export class FederationMatrix extends ServiceClass implements IFederationMatrixS
 				if (!isUserNativeFederated(otherMember)) {
 					throw new Error('Other member is not federated');
 				}
+
+				addSpanAttributes({
+					otherMemberUsername: otherMember.username,
+				});
+
 				const roomId = await federationSDK.createDirectMessageRoom(
 					userIdSchema.parse(actualMatrixUserId),
 					userIdSchema.parse(otherMember.username),
@@ -302,6 +334,11 @@ export class FederationMatrix extends ServiceClass implements IFederationMatrixS
 					}
 				}
 			}
+
+			// Add resulting Matrix room ID
+			addSpanAttributes({
+				matrixRoomId: matrixRoomResult.room_id,
+			});
 
 			await Rooms.setAsFederated(room._id, {
 				mrid: matrixRoomResult.room_id,
@@ -445,9 +482,17 @@ export class FederationMatrix extends ServiceClass implements IFederationMatrixS
 	async sendMessage(message: IMessage, room: IRoomNativeFederated, user: IUser): Promise<void> {
 		try {
 			const userMui = isUserNativeFederated(user) ? user.federation.mui : `@${user.username}:${this.serverName}`;
+			const messageType = message.files && message.files.length > 0 ? 'file' : 'text';
+
+			// Add runtime attributes for computed values
+			addSpanAttributes({
+				matrixUserId: userMui,
+				messageType,
+				isNativeFederatedUser: isUserNativeFederated(user),
+			});
 
 			let result;
-			if (message.files && message.files.length > 0) {
+			if (messageType === 'file') {
 				result = await this.handleFileMessage(message, room.federation.mrid, userMui, this.serverName);
 			} else {
 				result = await this.handleTextMessage(message, room.federation.mrid, userMui, this.serverName);
@@ -456,6 +501,11 @@ export class FederationMatrix extends ServiceClass implements IFederationMatrixS
 			if (!result) {
 				throw new Error('Failed to send message to Matrix - no result returned');
 			}
+
+			// Add the resulting event ID
+			addSpanAttributes({
+				matrixEventId: result.eventId,
+			});
 
 			await Messages.setFederationEventIdById(message._id, result.eventId);
 
@@ -583,12 +633,26 @@ export class FederationMatrix extends ServiceClass implements IFederationMatrixS
 
 			const userMui = isUserNativeFederated(user) ? user.federation.mui : `@${user.username}:${this.serverName}`;
 
+			// Add runtime attributes after querying message and room
+			addSpanAttributes({
+				roomId: room._id,
+				matrixRoomId: room.federation.mrid,
+				targetEventId: matrixEventId,
+				reactionKey,
+				matrixUserId: userMui,
+			});
+
 			const eventId = await federationSDK.sendReaction(
 				roomIdSchema.parse(room.federation.mrid),
 				eventIdSchema.parse(matrixEventId),
 				reactionKey,
 				userIdSchema.parse(userMui),
 			);
+
+			// Add resulting event ID
+			addSpanAttributes({
+				reactionEventId: eventId,
+			});
 
 			await Messages.setFederationReactionEventId(user.username || '', messageId, reaction, eventId);
 
@@ -660,6 +724,7 @@ export class FederationMatrix extends ServiceClass implements IFederationMatrixS
 	async leaveRoom(roomId: string, user: IUser, kicker?: IUser): Promise<void> {
 		if (kicker && isUserNativeFederated(kicker)) {
 			this.logger.debug('Only local users can remove others, ignoring action');
+			addSpanAttributes({ skipped: true, reason: 'kicker_is_native_federated' });
 			return;
 		}
 
@@ -667,10 +732,18 @@ export class FederationMatrix extends ServiceClass implements IFederationMatrixS
 			const room = await Rooms.findOneById(roomId);
 			if (!room || !isRoomNativeFederated(room)) {
 				this.logger.debug(`Room ${roomId} is not federated, skipping leave operation`);
+				addSpanAttributes({ skipped: true, reason: 'room_not_federated' });
 				return;
 			}
 
 			const actualMatrixUserId = isUserNativeFederated(user) ? user.federation.mui : `@${user.username}:${this.serverName}`;
+
+			// Add runtime attributes
+			addSpanAttributes({
+				matrixRoomId: room.federation.mrid,
+				matrixUserId: actualMatrixUserId,
+				isNativeFederatedUser: isUserNativeFederated(user),
+			});
 
 			await federationSDK.leaveRoom(roomIdSchema.parse(room.federation.mrid), userIdSchema.parse(actualMatrixUserId));
 
@@ -690,6 +763,14 @@ export class FederationMatrix extends ServiceClass implements IFederationMatrixS
 			const actualSenderMatrixUserId = isUserNativeFederated(userWhoRemoved)
 				? userWhoRemoved.federation.mui
 				: `@${userWhoRemoved.username}:${this.serverName}`;
+
+			// Add runtime attributes for computed Matrix user IDs
+			addSpanAttributes({
+				kickedMatrixUserId: actualKickedMatrixUserId,
+				senderMatrixUserId: actualSenderMatrixUserId,
+				kickedIsNativeFederated: isUserNativeFederated(removedUser),
+				senderIsNativeFederated: isUserNativeFederated(userWhoRemoved),
+			});
 
 			await federationSDK.kickUser(
 				roomIdSchema.parse(room.federation.mrid),
@@ -912,6 +993,14 @@ export class FederationMatrix extends ServiceClass implements IFederationMatrixS
 
 		// TODO: should use common function to get matrix user ID
 		const matrixUserId = isUserNativeFederated(user) ? user.federation.mui : `@${user.username}:${this.serverName}`;
+
+		// Add runtime attributes after querying room and user
+		addSpanAttributes({
+			matrixRoomId: room.federation.mrid,
+			matrixUserId,
+			username: user.username,
+			isNativeFederatedUser: isUserNativeFederated(user),
+		});
 
 		if (action === 'accept') {
 			await federationSDK.acceptInvite(room.federation.mrid, matrixUserId);

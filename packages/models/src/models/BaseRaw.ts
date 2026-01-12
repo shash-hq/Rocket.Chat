@@ -83,7 +83,7 @@ export abstract class BaseRaw<
 
 		this.preventSetUpdatedAt = options?.preventSetUpdatedAt ?? false;
 
-		return traceInstanceMethods(this);
+		return traceInstanceMethods(this, { type: 'model' });
 	}
 
 	private pendingIndexes: Promise<void> | undefined;
