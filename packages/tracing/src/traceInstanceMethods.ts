@@ -1,4 +1,5 @@
 import { tracerActiveSpan } from '.';
+import { getTraceExtractor } from './tracedDecorator';
 
 const getArguments = (args: unknown[]): unknown[] => {
 	return args.map((arg) => {
@@ -22,12 +23,6 @@ export interface ITraceInstanceMethodsOptions {
 	 * Array of method names to exclude from tracing
 	 */
 	ignoreMethods?: string[];
-
-	/**
-	 * Per-method attribute extractors that pull relevant debugging info from arguments
-	 * Key is the method name, value is a function that receives arguments and returns attributes
-	 */
-	attributeExtractors?: Record<string, (args: unknown[]) => Record<string, unknown>>;
 }
 
 /**
@@ -42,21 +37,23 @@ export interface ITraceInstanceMethodsOptions {
  * return traceInstanceMethods(this, { type: 'model' });
  *
  * @example
- * // For services with custom extractors:
- * return traceInstanceMethods(this, {
- *   type: 'service',
- *   attributeExtractors: {
- *     sendMessage: (args) => ({
- *       messageId: args[0]?._id,
- *       roomId: args[1]?._id,
- *     }),
- *   },
- * });
+ * // For services with @traced decorators on methods:
+ * class MyService {
+ *   constructor() {
+ *     return traceInstanceMethods(this, { type: 'service' });
+ *   }
+ *
+ *   @traced((room: IRoom, owner: IUser) => ({
+ *     roomId: room?._id,
+ *     ownerId: owner?._id,
+ *   }))
+ *   async createRoom(room: IRoom, owner: IUser) { ... }
+ * }
  */
 export function traceInstanceMethods<T extends object>(instance: T, options: ITraceInstanceMethodsOptions): T {
 	const className = instance.constructor.name;
 
-	const { type, ignoreMethods = [], attributeExtractors = {} } = options;
+	const { type, ignoreMethods = [] } = options;
 
 	return new Proxy(instance, {
 		get(target: Record<string, any>, prop: string): any {
@@ -73,10 +70,12 @@ export function traceInstanceMethods<T extends object>(instance: T, options: ITr
 							method: prop,
 						};
 
-						// If there's a custom extractor for this method, use it
-						if (attributeExtractors[prop]) {
+						// Check for @traced decorator extractor
+						const extractor = getTraceExtractor(target);
+
+						if (extractor) {
 							try {
-								const extractedAttrs = attributeExtractors[prop](argumentsList);
+								const extractedAttrs = extractor(...(argumentsList as unknown[]));
 								Object.assign(attributes, extractedAttrs);
 							} catch {
 								// If extractor fails, continue with base attributes

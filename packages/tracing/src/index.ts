@@ -10,6 +10,7 @@ import { initDatabaseTracing } from './traceDatabaseCalls';
 let tracer: Tracer | undefined;
 
 export * from './traceInstanceMethods';
+export * from './tracedDecorator';
 export * from './middlewares/tracerSpanMiddleware';
 
 export function isTracingEnabled() {
