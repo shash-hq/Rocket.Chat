@@ -1,7 +1,7 @@
-export { Announcement } from './Announcement';
-export { NpsSurveyAnnouncement } from './NpsSurveyAnnouncement';
-export { WorkspaceLicensePayload } from './WorkspaceLicensePayload';
-export {
+export type { Announcement } from './Announcement';
+export type { NpsSurveyAnnouncement } from './NpsSurveyAnnouncement';
+export type { WorkspaceLicensePayload } from './WorkspaceLicensePayload';
+export type {
 	WorkspaceSyncPayload,
 	WorkspaceSyncRequestPayload,
 	WorkspaceSyncResponse,
@@ -9,4 +9,4 @@ export {
 	WorkspaceCommsResponsePayload,
 	WorkspaceInteractionResponsePayload,
 } from './WorkspaceSyncPayload';
-export { ICloudSyncAnnouncement } from './CloudSyncAnnouncement';
+export type { ICloudSyncAnnouncement } from './CloudSyncAnnouncement';
