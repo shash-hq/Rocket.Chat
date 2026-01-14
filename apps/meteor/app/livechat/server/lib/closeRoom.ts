@@ -9,8 +9,8 @@ import type { ClientSession } from 'mongodb';
 import type { CloseRoomParams, CloseRoomParamsByUser, CloseRoomParamsByVisitor } from './localTypes';
 import { livechatLogger as logger } from './logger';
 import { parseTranscriptRequest } from './parseTranscriptRequest';
-import { callbacks } from '../../../../lib/callbacks';
 import { client, shouldRetryTransaction } from '../../../../server/database/utils';
+import { callbacks } from '../../../../server/lib/callbacks';
 import {
 	notifyOnLivechatInquiryChanged,
 	notifyOnRoomChanged,
@@ -95,8 +95,8 @@ async function afterRoomClosed(
 		 * @deprecated the `AppEvents.ILivechatRoomClosedHandler` event will be removed
 		 * in the next major version of the Apps-Engine
 		 */
-		void Apps.self?.getBridges()?.getListenerBridge().livechatEvent(AppEvents.ILivechatRoomClosedHandler, newRoom);
-		void Apps.self?.getBridges()?.getListenerBridge().livechatEvent(AppEvents.IPostLivechatRoomClosed, newRoom);
+		void Apps.self?.triggerEvent(AppEvents.ILivechatRoomClosedHandler, newRoom);
+		void Apps.self?.triggerEvent(AppEvents.IPostLivechatRoomClosed, newRoom);
 	});
 
 	const visitor = isRoomClosedByVisitorParams(params) ? params.visitor : undefined;
