@@ -12,7 +12,7 @@ import { eventIdSchema, roomIdSchema, userIdSchema, federationSDK, FederationReq
 import type { EventID, UserID, FileMessageType, PresenceState } from '@rocket.chat/federation-sdk';
 import { Logger } from '@rocket.chat/logger';
 import { Users, Subscriptions, Messages, Rooms, Settings } from '@rocket.chat/models';
-import { traceInstanceMethods, addSpanAttributes, traced } from '@rocket.chat/tracing';
+import { addSpanAttributes, traced, tracedClass } from '@rocket.chat/tracing';
 import emojione from 'emojione';
 
 import { toExternalMessageFormat, toExternalQuoteMessageFormat } from './helpers/message.parsers';
@@ -134,6 +134,7 @@ export async function createOrUpdateFederatedUser(options: { username: string; n
 
 export { generateEd25519RandomSecretKey } from '@rocket.chat/federation-sdk';
 
+@tracedClass({ type: 'service' })
 export class FederationMatrix extends ServiceClass implements IFederationMatrixService {
 	protected name = 'federation-matrix';
 
@@ -147,8 +148,6 @@ export class FederationMatrix extends ServiceClass implements IFederationMatrixS
 
 	constructor() {
 		super();
-
-		return traceInstanceMethods(this, { type: 'service' });
 	}
 
 	override async created(): Promise<void> {
